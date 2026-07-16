@@ -61,23 +61,36 @@ curl http://localhost:3000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "deepseek",
-    "messages": [{"role": "user", "content": "Hello"}],
+    "messages": [{"role": "user", "content": "北京的天气怎么样？"}],
     "tools": [{
       "type": "function",
       "function": {
         "name": "get_weather",
-        "description": "Get weather",
+        "description": "获取指定城市的天气信息",
         "parameters": {
           "type": "object",
           "properties": {
-            "location": {"type": "string"}
-          }
+            "location": {"type": "string", "description": "城市名"}
+          },
+          "required": ["location"]
         }
       }
-    }],
-    "tool_choice": "auto"
+    }]
   }'
 ```
+
+## 测试状态
+
+| 测试场景 | 结果 | 说明 |
+|:--------:|:----:|------|
+| 单工具 + 明确指示 | ✅ 通过 | AI 输出 XML → 中间件正确解析为 `tool_calls` |
+| 多工具场景 | ⚠️ 不稳定 | AI 可能直接回复文本，需优化提示词 |
+| 无 tools 请求 | ✅ 通过 | 原样透传，不影响正常聊天 |
+| XML 格式解析 | ✅ 通过 | `<tool_use>` 标签正确解析 |
+| Bracket 格式解析 | ✅ 通过 | `[function_calls]` 格式正确解析 |
+
+> ⚠️ **已知限制**: 工具调用通过提示词工程实现，依赖 AI 模型配合。
+> 详见 [ISSUES.md](ISSUES.md)
 
 ## 许可证
 

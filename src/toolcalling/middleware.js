@@ -219,10 +219,12 @@ export function buildToolCallChunk(toolCall, modelName, isFirst = false, isLast 
   return `data: ${JSON.stringify(data)}\n\n`;
 }
 
-export default {
+export const toolMiddleware = {
   processRequest,
   processResponse,
   buildToolCallMessage,
   buildToolCallCompletion,
   buildToolCallChunk
 };
+
+export default toolMiddleware;
