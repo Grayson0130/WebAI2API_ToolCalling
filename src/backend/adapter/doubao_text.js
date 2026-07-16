@@ -43,7 +43,12 @@ async function generate(context, prompt, imgPaths, modelId, meta = {}) {
 
     try {
         logger.info('适配器', '开启新会话...', meta);
+        // 修复：强制整页重载，清掉上一轮会话残留 DOM，解决成功一次后连续失败的问题
+        try {
+            await page.goto('about:blank', { waitUntil: 'load', timeout: 15000 });
+        } catch (e) { /* 忽略 */ }
         await gotoWithCheck(page, TARGET_URL);
+        await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
 
         // 1. 等待输入框加载
         const inputLocator = page.locator('textarea.semi-input-textarea');

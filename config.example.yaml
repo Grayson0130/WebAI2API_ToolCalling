@@ -157,6 +157,9 @@ backend:
       
 
 queue:
+  # 最大并发数：每个网页模型只有 1 个标签页，>1 会导致同页并发踩踏（frame detached / CLICK_TIMEOUT）
+  # 保持为 1 全局串行；若已加“每 Worker 锁”可调大
+  maxConcurrent: 1
   # 队列缓冲区大小（非流式请求的额外排队数）
   # 实际队列上限 = Workers数量 + queueBuffer
   # 设为 0 则不限制非流式请求数量

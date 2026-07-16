@@ -157,6 +157,7 @@ async function parseTextRequest(messages, tempDir, imageLimit, modelId, isStream
                     const imagePath = await resolveImageToPath(url, tempDir);
                     if (imagePath) {
                         imagePaths.push(imagePath);
+                        // 插入占位符
                         textBuffer += `[图片${globalImageCount}]`;
                     } else {
                         textBuffer += `[图片${globalImageCount} (上传失败)]`;
@@ -270,7 +271,7 @@ async function parseImageRequest(messages, tempDir, imageLimit, modelId, isStrea
                     }
                 }
 
-                // 处理 data URL / http URL
+                // 处理 data URL 或 http(s) 链接
                 const url = item.image_url.url;
                 const imagePath = await resolveImageToPath(url, tempDir);
                 if (imagePath) {
@@ -309,7 +310,28 @@ async function parseImageRequest(messages, tempDir, imageLimit, modelId, isStrea
 }
 
 /**
- * 统一写图片：优先保留原格式，仅在必要时转码
+ * 保存 Base64 图片到临时文件
+ * @param {string} dataUrl - data URL 格式的图片
+ * @param {string} tempDir - 临时目录
+ * @returns {Promise<string|null>} 保存的文件路径，失败返回 null
+ */
+async function saveBase64Image(dataUrl, tempDir) {
+    const matches = dataUrl.match(/^data:([A-Za-z-+\/.]+);base64,(.+)$/);
+    if (!matches || matches.length !== 3) {
+        return null;
+    }
+
+    try {
+        const buffer = Buffer.from(matches[2], 'base64');
+        const { path: filePath } = await writeImageBuffer(buffer, tempDir);
+        return filePath;
+    } catch (e) {
+        return null;
+    }
+}
+
+/**
+ * 统一写图片：受支持格式原样保存，仅对不支持的格式（heic/tiff 等）转码
  */
 async function writeImageBuffer(buffer, tempDir) {
     let ext = 'jpg';
@@ -334,22 +356,7 @@ async function writeImageBuffer(buffer, tempDir) {
 }
 
 /**
- * 保存 Base64 图片到临时文件
- */
-async function saveBase64Image(dataUrl, tempDir) {
-    const matches = dataUrl.match(/^data:([A-Za-z-+\/.]+);base64,(.+)$/);
-    if (!matches || matches.length !== 3) return null;
-    try {
-        const buffer = Buffer.from(matches[2], 'base64');
-        const { path: filePath } = await writeImageBuffer(buffer, tempDir);
-        return filePath;
-    } catch (e) {
-        return null;
-    }
-}
-
-/**
- * 下载远程图片并保存到临时文件
+ * 下载远程图片并保存到临时文件（支持 http(s) 图片链接）
  */
 async function saveRemoteImage(url, tempDir) {
     try {
@@ -368,13 +375,17 @@ async function saveRemoteImage(url, tempDir) {
  */
 export async function resolveImageToPath(url, tempDir) {
     if (!url) return null;
-    if (url.startsWith('data:image')) return await saveBase64Image(url, tempDir);
-    if (url.startsWith('http://') || url.startsWith('https://')) return await saveRemoteImage(url, tempDir);
+    if (url.startsWith('data:image')) {
+        return await saveBase64Image(url, tempDir);
+    }
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+        return await saveRemoteImage(url, tempDir);
+    }
     return null;
 }
 
 /**
- * 从所有 messages 中抽取图片路径（供 tools 分支和普通分支共用）
+ * 从所有 messages 中抽取图片路径（供 tools 分支与普通分支共用）
  */
 export async function extractImagePaths(messages, { tempDir, imageLimit }) {
     const imagePaths = [];

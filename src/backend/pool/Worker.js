@@ -34,6 +34,7 @@ export class Worker {
         this.browser = null;
         this.page = null;
         this.busyCount = 0;
+        this._taskChain = Promise.resolve(); // 串行化同一 Worker/页面上的任务
         this.initialized = false;
 
         // 浏览器所有权（用于共享浏览器场景的协调重启）
@@ -491,12 +492,16 @@ export class Worker {
         const enrichedMeta = { ...meta, adapter: type, model: modelId };
 
         this.busyCount++;
-        try {
-            // 传递原始 modelId，由适配器自己解析
-            return await adapter.generate(subContext, prompt, paths, modelId, enrichedMeta);
-        } finally {
-            this.busyCount--;
-        }
+        // 修复：同一页面上的任务串行执行，杜绝两个请求同时操作同一个 DOM
+        const run = this._taskChain.then(async () => {
+            try {
+                return await adapter.generate(subContext, prompt, paths, modelId, enrichedMeta);
+            } finally {
+                this.busyCount--;
+            }
+        });
+        this._taskChain = run.catch(() => {});
+        return run;
     }
 
     /**

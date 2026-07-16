@@ -360,24 +360,35 @@ export async function safeClick(page, target, options = {}) {
         await el.click({ clickCount, force: true });
     };
 
-    // 带超时的执行（移除了重试机制）
-    let timeoutId;
-    try {
-        const timeoutPromise = new Promise((_, reject) => {
-            timeoutId = setTimeout(() => {
-                aborted = true;
-                reject(new Error('CLICK_TIMEOUT'));
-            }, timeout);
-        });
+    // 带超时 + 重试的执行：热页面 React 重渲染导致 detach 时重取元素再点
+    const maxAttempts = options.retries ?? 3;
+    let lastErr;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        aborted = false;
+        let timeoutId;
+        try {
+            const timeoutPromise = new Promise((_, reject) => {
+                timeoutId = setTimeout(() => {
+                    aborted = true;
+                    reject(new Error('CLICK_TIMEOUT'));
+                }, timeout);
+            });
 
-        await Promise.race([
-            doClick().finally(() => clearTimeout(timeoutId)),
-            timeoutPromise
-        ]);
-    } catch (err) {
-        clearTimeout(timeoutId);
-        throw new Error(`点击操作失败 (${selector}): ${err.message}`);
+            await Promise.race([
+                doClick().finally(() => clearTimeout(timeoutId)),
+                timeoutPromise
+            ]);
+            return; // 点击成功
+        } catch (err) {
+            clearTimeout(timeoutId);
+            lastErr = err;
+            logger.warn('浏览器', `[safeClick] 第 ${attempt}/${maxAttempts} 次点击失败: ${err.message}`);
+            if (attempt < maxAttempts) {
+                await sleep(400, 800); // 等 DOM 重新稳定后重试；doClick 内会重取 Locator
+            }
+        }
     }
+    throw new Error(`点击操作失败 (${selector}): ${lastErr?.message}`);
 }
 
 
@@ -715,7 +726,7 @@ export async function uploadFilesViaChooser(page, triggerTarget, filePaths, opti
     logger.info('浏览器', `正在处理 ${filePaths.length} 张图片 (filechooser 模式)...`, meta);
 
     // 设置上传确认监听
-    const uploadPromise = new Promise((resolve) => {
+    const uploadPromise = new Promise((resolve, reject) => {
         if (!options.uploadValidator) {
             // 无验证器，直接 resolve
             resolve();
@@ -724,8 +735,10 @@ export async function uploadFilesViaChooser(page, triggerTarget, filePaths, opti
 
         const timeoutId = setTimeout(() => {
             cleanup();
-            logger.warn('浏览器', `图片上传等待超时 (已确认: ${uploadedCount}/${expectedUploads})`, meta);
-            resolve();
+            logger.error('浏览器', `图片上传等待超时 (已确认: ${uploadedCount}/${expectedUploads})`, meta);
+            const err = new Error(`图片上传确认超时: ${uploadedCount}/${expectedUploads}`);
+            err.code = 'UPLOAD_CONFIRM_TIMEOUT';
+            reject(err);
         }, timeout);
 
         const onResponse = (response) => {

@@ -132,7 +132,7 @@ export function createOpenAIRouter(context) {
                     }
                 );
                 prompt = compiled.prompt;
-                // 即使在 tools 场景，也从原始 messages 中解析图片
+                // 修复：tools 场景也从原始 messages 解析图片
                 imagePaths = await extractImagePaths(data.messages, { tempDir, imageLimit });
                 modelId = data.model;
                 modelName = data.model;

@@ -70,7 +70,12 @@ async function generate(context, prompt, imgPaths, modelId, meta = {}) {
 
     try {
         logger.info('适配器', '开启新会话...', meta);
+        // 修复：强制整页重载，清掉上一轮会话残留 DOM，解决成功一次后连续失败的问题
+        try {
+            await page.goto('about:blank', { waitUntil: 'load', timeout: 15000 });
+        } catch (e) { /* 忽略 */ }
         await gotoWithCheck(page, TARGET_URL);
+        await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
 
         const useTempChat = config?.backend?.adapter?.gemini_text?.temporaryChat || false;
         if (useTempChat) {
@@ -89,22 +94,32 @@ async function generate(context, prompt, imgPaths, modelId, meta = {}) {
         // 2. 上传图片
         if (imgPaths && imgPaths.length > 0) {
             logger.info('适配器', `开始上传 ${imgPaths.length} 张图片...`, meta);
-            logger.debug('适配器', '点击上传按钮...', meta);
-            const uploadMenuBtn = page.getByRole('button', {
-                name: /upload|add files|attach|加号|上传|附加/i
-            }).last();
-            await safeClick(page, uploadMenuBtn, { bias: 'button', timeout: 5000 });
+            logger.debug('适配器', '点击加号按钮...', meta);
+            const uploadValidator = (response) => {
+                const url = response.url();
+                return response.status() === 200 && url.includes('/upload/');
+            };
+            try {
+                // 按钮名放宽为正则，兼容 Gemini UI 改版
+                const uploadMenuBtn = page.getByRole('button', {
+                    name: /upload|add files|attach|加号|上传|附加/i
+                }).last();
+                await safeClick(page, uploadMenuBtn, { bias: 'button' });
 
-            const uploadFilesBtn = page.getByRole('menuitem', {
-                name: /upload files|upload|文件|图片/i
-            }).first();
-
-            await uploadFilesViaChooser(page, uploadFilesBtn, imgPaths, {
-                uploadValidator: (response) => {
-                    const url = response.url();
-                    return response.status() === 200 && url.includes('/upload/');
-                }
-            }, meta);
+                const uploadFilesBtn = page.getByRole('menuitem', {
+                    name: /upload files|upload|文件|图片/i
+                }).first();
+                await uploadFilesViaChooser(page, uploadFilesBtn, imgPaths, { uploadValidator }, meta);
+            } catch (err) {
+                // 兜底：菜单点不到时直接向隐藏 file input 注入文件
+                logger.warn('适配器', `上传菜单不可用，改用 file input 兜底: ${err.message}`, meta);
+                const fileInput = page.locator('input[type="file"]').last();
+                await fileInput.waitFor({ state: 'attached', timeout: 10000 });
+                await fileInput.setInputFiles(imgPaths);
+                await page.waitForResponse(uploadValidator, { timeout: 60000 }).catch(() => {
+                    logger.warn('适配器', 'file input 兜底上传未确认，可能失败', meta);
+                });
+            }
             logger.info('适配器', '图片上传完成', meta);
         }
 
