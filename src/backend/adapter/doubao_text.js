@@ -55,6 +55,15 @@ async function generate(context, prompt, imgPaths, modelId, meta = {}) {
         const inputLocator = page.locator('textarea.semi-input-textarea');
         await waitForInput(page, inputLocator, { click: false });
 
+        // 1.5 登录态检测：落地页会有"登录"按钮且无法聊天
+        const loginBtn = page.locator('button').filter({ hasText: /^登录$|^登錄$|^Log\s?in$|^Sign\s?in$/i });
+        if (await loginBtn.count().catch(() => 0) > 0) {
+            const isVisible = await loginBtn.first().isVisible().catch(() => false);
+            if (isVisible) {
+                return { error: '豆包账号未登录，请用 -login=doubao 重新登录后再试' };
+            }
+        }
+
         // 2. 选择模型
         const modelMenuName = MODEL_MENU_MAP[modelId] || MODEL_MENU_MAP['seed'];
         logger.debug('适配器', `选择模型: ${modelId} -> ${String(modelMenuName)}`, meta);
@@ -112,25 +121,58 @@ async function generate(context, prompt, imgPaths, modelId, meta = {}) {
             page.on('response', applyUploadHandler);
 
             try {
-                // 点击上传菜单按钮（排除掉含有模型名称或带有“更多”文案的按钮）
-                const uploadMenuBtn = page.locator('#input-engine-container button[aria-haspopup="menu"]')
-                    .filter({ hasNot: page.locator('text=/Fast|Think|Pro|快速|思考|专家|專家|更多/') })
-                    .first();
-                await safeClick(page, uploadMenuBtn, { bias: 'button' });
-                await sleep(300, 500);
+                // 通过 file input 直接上传（login 后页面上有 input[type=”file”]）
+                const fi = page.locator('input[type=”file”]').first();
+                if (await fi.count().catch(() => 0) > 0) {
+                    logger.info('适配器', '找到 file input，直接设置文件', meta);
+                    await fi.setInputFiles(imgPaths);
+                } else {
+                    // 备用：点击空文本的 menu 按钮 → 选择上传菜单项
+                    logger.debug('适配器', '尝试菜单上传...', meta);
+                    const menuBtns = page.locator('button[aria-haspopup=”menu”]');
+                    const n = await menuBtns.count().catch(() => 0);
+                    let done = false;
+                    for (let i = 0; i < n && !done; i++) {
+                        const btn = menuBtns.nth(i);
+                        const text = await btn.textContent().catch(() => 'x');
+                        if (text.trim().length > 0) continue;
+                        try {
+                            await btn.click({ timeout: 3000 });
+                            await sleep(500, 800);
+                            const item = page.locator('[role=”menuitem”]').filter({ hasText: /上传|文件|图片|upload|file/i }).first();
+                            if (await item.count().catch(() => 0) > 0) {
+                                await uploadFilesViaChooser(page, item, imgPaths, {
+                                    uploadValidator: (response) => {
+                                        if (response.status() !== 200 || response.request().method() !== 'POST') return false;
+                                        const url = response.url();
+                                        for (const path of expectedUploadPaths) {
+                                            if (url.includes(path)) return true;
+                                        }
+                                        return false;
+                                    }
+                                }, meta);
+                                done = true;
+                            }
+                        } catch {}
+                    }
+                    if (!done) throw new Error('无法找到上传控件');
+                }
 
-                // 点击上传文件选项
-                const uploadItem = page.locator('div[role="menuitem"]').filter({ hasText: /上传文件或图片|上傳檔案或圖片|Upload File or Image/ });
-                await uploadFilesViaChooser(page, uploadItem, imgPaths, {
-                    uploadValidator: (response) => {
+                // 等待上传确认
+                if (expectedUploadPaths.size > 0) {
+                    await page.waitForResponse((response) => {
                         if (response.status() !== 200 || response.request().method() !== 'POST') return false;
                         const url = response.url();
                         for (const path of expectedUploadPaths) {
                             if (url.includes(path)) return true;
                         }
                         return false;
-                    }
-                }, meta);
+                    }, { timeout: 30000 }).catch(() => {
+                        logger.warn('适配器', '上传确认超时', meta);
+                    });
+                } else {
+                    await sleep(2000, 3000);
+                }
             } catch (uploadErr) {
                 logger.error('适配器', `图片上传失败: ${uploadErr.message}`, meta);
                 await dumpUploadDebug(page, meta, 'doubao');
