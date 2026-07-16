@@ -194,6 +194,8 @@ export function createQueueManager(queueConfig, callbacks) {
                         id,
                         tools: tool_calls.map(tc => tc.function.name)
                     });
+                    // 使用解析后的 content（已剥离 fence 标签）
+                    result.parsedContent = parsed.content;
                 }
             }
             // =================================================
@@ -207,6 +209,10 @@ export function createQueueManager(queueConfig, callbacks) {
                     finalContent = result.image;
                 }
                 historyResponseText = result.imageUrl || '';
+            } else if (result.parsedContent !== undefined) {
+                // tools 场景：使用解析后的 content（已剥离 fence）
+                finalContent = result.parsedContent || '';
+                historyResponseText = finalContent;
             } else {
                 finalContent = result.text || '生成失败';
                 historyResponseText = result.text || '';

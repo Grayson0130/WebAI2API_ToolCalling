@@ -31,7 +31,8 @@ export function createOpenAIRouter(context) {
         getModelType,
         tempDir,
         imageLimit,
-        queueManager
+        queueManager,
+        config
     } = context;
 
     /**
