@@ -660,13 +660,11 @@ export async function pasteImages(page, target, filePaths, options = {}, meta = 
             const expectedUploads = filePaths.length;
             let validatedCount = 0;
 
-            const uploadPromise = new Promise((resolve, reject) => {
+            const uploadPromise = new Promise((resolve) => {
                 const timeout = setTimeout(() => {
                     cleanup();
-                    logger.error('浏览器', `图片上传等待超时 (已确认: ${validatedCount}/${expectedUploads})`, meta);
-                    const err = new Error(`图片上传超时: ${validatedCount}/${expectedUploads}`);
-                    err.code = 'UPLOAD_CONFIRM_TIMEOUT';
-                    reject(err);
+                    logger.warn('浏览器', `图片上传等待超时 (已确认: ${validatedCount}/${expectedUploads})`, meta);
+                    resolve(); // 只 resolve，失败在 await 后判断
                 }, 60000); // 60s 超时
 
                 const onResponse = (response) => {
@@ -690,6 +688,11 @@ export async function pasteImages(page, target, filePaths, options = {}, meta = 
 
             logger.info('浏览器', `已提交图片, 正在等待上传确认...`, meta);
             await uploadPromise;
+            if (validatedCount < expectedUploads) {
+                const err = new Error(`图片上传确认超时: ${validatedCount}/${expectedUploads}`);
+                err.code = 'UPLOAD_CONFIRM_TIMEOUT';
+                throw err;
+            }
             logger.info('浏览器', `所有图片上传完成`, meta);
         } else {
             // 默认行为: 等待上传预览出现
@@ -726,19 +729,16 @@ export async function uploadFilesViaChooser(page, triggerTarget, filePaths, opti
     logger.info('浏览器', `正在处理 ${filePaths.length} 张图片 (filechooser 模式)...`, meta);
 
     // 设置上传确认监听
-    const uploadPromise = new Promise((resolve, reject) => {
+    const uploadPromise = new Promise((resolve) => {
         if (!options.uploadValidator) {
-            // 无验证器，直接 resolve
             resolve();
             return;
         }
 
         const timeoutId = setTimeout(() => {
             cleanup();
-            logger.error('浏览器', `图片上传等待超时 (已确认: ${uploadedCount}/${expectedUploads})`, meta);
-            const err = new Error(`图片上传确认超时: ${uploadedCount}/${expectedUploads}`);
-            err.code = 'UPLOAD_CONFIRM_TIMEOUT';
-            reject(err);
+            logger.warn('浏览器', `图片上传等待超时 (已确认: ${uploadedCount}/${expectedUploads})`, meta);
+            resolve(); // 只 resolve，避免悬空 promise 崩溃；失败在 await 后判断
         }, timeout);
 
         const onResponse = (response) => {
@@ -785,6 +785,11 @@ export async function uploadFilesViaChooser(page, triggerTarget, filePaths, opti
     // 等待上传完成（如果有验证器）
     if (options.uploadValidator) {
         await uploadPromise;
+        if (uploadedCount < expectedUploads) {
+            const err = new Error(`图片上传确认超时: ${uploadedCount}/${expectedUploads}`);
+            err.code = 'UPLOAD_CONFIRM_TIMEOUT';
+            throw err; // 在正常调用栈中抛出，不会悬空
+        }
         logger.info('浏览器', '所有图片上传完成', meta);
     }
 }
