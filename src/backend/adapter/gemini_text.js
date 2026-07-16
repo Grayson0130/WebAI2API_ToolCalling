@@ -263,9 +263,7 @@ export const manifest = {
         { id: 'gemini-3.1-pro', imagePolicy: 'optional', type: 'text' },
         { id: 'gemini-3.5-flash', imagePolicy: 'optional', type: 'text' },
         { id: 'gemini-3.5-flash-thinking', imagePolicy: 'optional', type: 'text' },
-        { id: 'gemini-3.5-pro', imagePolicy: 'optional', type: 'text' },
-        { id: 'gemini-2.5-flash', imagePolicy: 'optional', type: 'text' },
-        { id: 'gemini-2.5-pro', imagePolicy: 'optional', type: 'text' }
+        { id: 'gemini-3.5-pro', imagePolicy: 'optional', type: 'text' }
     ],
 
     navigationHandlers: [],
