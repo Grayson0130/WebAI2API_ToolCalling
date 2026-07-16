@@ -313,7 +313,10 @@ export function loadConfig() {
     }
 
     // maxConcurrent 动态计算：等于 Workers 数量
-    config.queue.maxConcurrent = config.backend.pool.workers.length;
+    // maxConcurrent 优先读配置文件，没有才按 Worker 数计算
+    if (config.queue.maxConcurrent === undefined) {
+        config.queue.maxConcurrent = config.backend.pool.workers.length;
+    }
 
     // 初始化 adapter 配置容器
     if (!config.backend.adapter) {
