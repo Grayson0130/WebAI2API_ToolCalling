@@ -170,6 +170,7 @@ export function createAdminRouter(context) {
                 if (vncInfo) {
                     sendJson(res, 200, vncInfo);
                 } else {
+                    // 非 Supervisor 模式或无法获取信息
                     sendJson(res, 200, {
                         enabled: false,
                         port: 0,

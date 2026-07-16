@@ -283,9 +283,9 @@ export async function initBrowserBase(config, options = {}) {
 
     // 构造 Camoufox 启动选项
     const currentOS = getCurrentOS();
-	    const camoufoxLaunchOptions = {
-	        executable_path: browserConfig.path || undefined,
-	        headless: headlessMode,
+    const camoufoxLaunchOptions = {
+        executable_path: browserConfig.path || undefined,
+        headless: headlessMode,
         user_data_dir: userDataDir,
         ff_version: 135,
         fingerprint: myFingerprint,
@@ -432,4 +432,3 @@ export async function initBrowserBase(config, options = {}) {
 
 // 导出工具函数供 pool.js 使用
 export { createCursor, getRealViewport, clamp, random, sleep };
-
