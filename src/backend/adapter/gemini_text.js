@@ -89,20 +89,42 @@ async function generate(context, prompt, imgPaths, modelId, meta = {}) {
         // 2. 上传图片
         if (imgPaths && imgPaths.length > 0) {
             logger.info('适配器', `开始上传 ${imgPaths.length} 张图片...`, meta);
-            logger.debug('适配器', '点击加号按钮...', meta);
-            const uploadMenuBtn = page.getByRole('button', { name: 'Open upload file menu' });
-            await safeClick(page, uploadMenuBtn, { bias: 'button' });
+            logger.debug('适配器', '点击加号或上传按钮...', meta);
 
-            const uploadFilesBtn = page.getByRole('menuitem', { name: /Upload files/ });
-            await uploadFilesViaChooser(page, uploadFilesBtn, imgPaths, {
-                uploadValidator: (response) => {
-                    const url = response.url();
-                    return response.status() === 200 &&
-                        url.includes('google.com/upload/') &&
-                        url.includes('upload_id=');
+            // 尝试多种可能的按钮名称（Gemini UI 经常改）
+            const uploadBtnCandidates = [
+                page.getByRole('button', { name: 'Open upload file menu' }),
+                page.getByRole('button', { name: /upload|attach|add/i }),
+                page.getByRole('button', { name: /Add file|Attach|Image|Photo/i }),
+                page.locator('button[aria-label*="upload" i], button[aria-label*="attach" i]'),
+            ];
+            let uploadMenuBtn = null;
+            for (const candidate of uploadBtnCandidates) {
+                if (await candidate.count().catch(() => 0)) {
+                    uploadMenuBtn = candidate.first();
+                    break;
                 }
-            }, meta);
-            logger.info('适配器', '图片上传完成', meta);
+            }
+            if (uploadMenuBtn) {
+                await safeClick(page, uploadMenuBtn, { bias: 'button', timeout: 5000 });
+            } else {
+                logger.warn('适配器', '未找到上传按钮，跳过图片上传', meta);
+            }
+
+            const uploadFilesBtn = page.getByRole('menuitem', { name: /Upload|upload file/i });
+            if (await uploadFilesBtn.count().catch(() => 0)) {
+                await uploadFilesViaChooser(page, uploadFilesBtn, imgPaths, {
+                    uploadValidator: (response) => {
+                        const url = response.url();
+                        return response.status() === 200 &&
+                            url.includes('google.com/upload/') &&
+                            url.includes('upload_id=');
+                    }
+                }, meta);
+                logger.info('适配器', '图片上传完成', meta);
+            } else {
+                logger.warn('适配器', '未找到文件选择菜单项，尝试直接键盘粘贴图片', meta);
+            }
         }
 
         // 3. 输入提示词
