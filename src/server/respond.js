@@ -104,19 +104,38 @@ export function sendApiError(res, options) {
 
 /**
  * 构造 OpenAI 格式的聊天完成响应（非流式）
- * @param {string} content - 响应内容
- * @param {string} [modelName] - 模型名称
- * @param {string} [reasoningContent] - 思考/推理过程内容 (OpenAI o1 格式)
+ * 支持 tool_calls
+ * @param {object|string} opts - 选项对象或 content 字符串
+ * @param {string} [opts.content] - 响应内容
+ * @param {string} [opts.model] - 模型名称
+ * @param {string} [opts.reasoning] - 思考/推理过程
+ * @param {Array} [opts.tool_calls] - 工具调用列表
+ * @param {string} [opts.finish_reason='stop'] - 完成原因
+ * @param {object} [opts.usage] - token 用量
  * @returns {object} OpenAI 格式的响应对象
  */
-export function buildChatCompletion(content, modelName, reasoningContent) {
+export function buildChatCompletion(opts, modelName, reasoningContent) {
+    // 兼容旧签名: buildChatCompletion(content, modelName, reasoningContent)
+    let content, reasoning, tool_calls, finish_reason, usage;
+    if (typeof opts === 'string') {
+        content = opts;
+        reasoning = reasoningContent;
+        finish_reason = 'stop';
+    } else {
+        content = opts.content;
+        modelName = opts.model || modelName;
+        reasoning = opts.reasoning;
+        tool_calls = opts.tool_calls;
+        finish_reason = opts.finish_reason || 'stop';
+        usage = opts.usage;
+    }
+
     const message = {
         role: 'assistant',
-        content: content
+        content: tool_calls?.length ? (content ?? null) : (content ?? ''),
     };
-    if (reasoningContent) {
-        message.reasoning_content = reasoningContent;
-    }
+    if (reasoning) message.reasoning_content = reasoning;
+    if (tool_calls?.length) message.tool_calls = tool_calls;
 
     return {
         id: 'chatcmpl-' + Date.now(),
@@ -126,9 +145,75 @@ export function buildChatCompletion(content, modelName, reasoningContent) {
         choices: [{
             index: 0,
             message,
-            finish_reason: 'stop'
-        }]
+            finish_reason: tool_calls?.length ? 'tool_calls' : finish_reason,
+        }],
+        usage: usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     };
+}
+
+/**
+ * 构造 tool_calls 的流式 SSE chunks（单包模拟流）
+ * @param {object} opts - { id, model, content, tool_calls, reasoning }
+ * @returns {Array} SSE data chunks
+ */
+export function buildToolCallStreamChunks(opts) {
+    const { id, model, content, tool_calls, reasoning } = opts;
+    const cid = id || `chatcmpl_${Date.now()}`;
+    const created = Math.floor(Date.now() / 1000);
+    const base = { id: cid, object: 'chat.completion.chunk', created, model };
+    const chunks = [];
+
+    // role chunk
+    chunks.push({
+        ...base,
+        choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+    });
+
+    if (reasoning) {
+        chunks.push({
+            ...base,
+            choices: [{ index: 0, delta: { reasoning_content: reasoning }, finish_reason: null }],
+        });
+    }
+
+    if (content) {
+        chunks.push({
+            ...base,
+            choices: [{ index: 0, delta: { content }, finish_reason: null }],
+        });
+    }
+
+    if (tool_calls?.length) {
+        for (let i = 0; i < tool_calls.length; i++) {
+            const tc = tool_calls[i];
+            // name chunk
+            chunks.push({
+                ...base,
+                choices: [{
+                    index: 0,
+                    delta: { tool_calls: [{ index: i, id: tc.id, type: 'function', function: { name: tc.function.name, arguments: '' } }] },
+                    finish_reason: null,
+                }],
+            });
+            // arguments chunk
+            chunks.push({
+                ...base,
+                choices: [{
+                    index: 0,
+                    delta: { tool_calls: [{ index: i, function: { arguments: tc.function.arguments } }] },
+                    finish_reason: null,
+                }],
+            });
+        }
+    }
+
+    // finish chunk
+    chunks.push({
+        ...base,
+        choices: [{ index: 0, delta: {}, finish_reason: tool_calls?.length ? 'tool_calls' : 'stop' }],
+    });
+
+    return chunks;
 }
 
 /**

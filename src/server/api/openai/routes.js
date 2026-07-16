@@ -6,9 +6,17 @@
 import crypto from 'crypto';
 import { logger } from '../../../utils/logger.js';
 import { ERROR_CODES } from '../../errors.js';
-import { sendJson, sendApiError } from '../../respond.js';
+import { sendJson, sendSse, sendSseDone, sendApiError, buildChatCompletion, buildToolCallStreamChunks } from '../../respond.js';
 import { parseRequest } from './parse.js';
-import { toolMiddleware } from '../../../toolcalling/middleware.js';
+import {
+  shouldEnableTools,
+  normalizeTools,
+  resolveToolChoice,
+  compileMessagesWithTools,
+  parseToolCalls,
+  needsRequiredRetry,
+  buildRequiredRetrySuffix,
+} from '../../tools/toolCalling.js';
 
 /**
  * 创建 OpenAI API 路由处理器
@@ -81,6 +89,7 @@ export function createOpenAIRouter(context) {
             const body = Buffer.concat(chunks).toString();
             const data = JSON.parse(body);
             const isStreaming = data.stream === true;
+            const toolCfg = config.server?.toolCalling || {};
 
             // 限流检查
             if (!isStreaming && !queueManager.canAcceptNonStreaming()) {
@@ -102,44 +111,68 @@ export function createOpenAIRouter(context) {
                 });
             }
 
-            // ============ Tool Calling Middleware ============
-            // 将 tools 参数通过提示词工程注入到消息中
-            const { processedData, toolState } = toolMiddleware.processRequest(data, {
-                format: data.tool_format || 'xml'
-            });
+            // ============ Tool Calling Pipeline ============
+            // 在入队前完成 tools 编译，不走 parseRequest
+            const toolsEnabled = shouldEnableTools(data, toolCfg);
+            let prompt, imagePaths, modelId, modelName, reasoning;
+            let toolChoiceResolved = null;
+            let normalizedTools = [];
 
-            if (toolState.active) {
-                logger.info('服务器', `[工具调用] 已注入 ${toolState.tools.length} 个工具定义`, { id: requestId, tools: toolState.toolNames });
+            if (toolsEnabled) {
+                normalizedTools = normalizeTools(data.tools);
+                toolChoiceResolved = resolveToolChoice(data.tool_choice, normalizedTools);
+                const compiled = compileMessagesWithTools(
+                    data.messages,
+                    normalizedTools,
+                    data.tool_choice,
+                    {
+                        compactSchema: toolCfg.compactSchema !== false,
+                        maxToolsChars: toolCfg.maxToolsChars || 12000,
+                    }
+                );
+                prompt = compiled.prompt;
+                imagePaths = []; // tools 场景暂不处理图片
+                modelId = data.model;
+                modelName = data.model;
+                reasoning = data.reasoning === true;
+
+                logger.info('服务器', `[工具调用] 已注入 ${normalizedTools.length} 个工具定义`, {
+                    id: requestId,
+                    tools: normalizedTools.map(t => t.name)
+                });
+            } else {
+                // 原有无 tools 路径
+                const parseResult = await parseRequest(data, {
+                    tempDir,
+                    imageLimit,
+                    backendName,
+                    getSupportedModels: getModels,
+                    getImagePolicy,
+                    getModelType,
+                    requestId,
+                    logger
+                });
+
+                if (!parseResult.success) {
+                    sendApiError(res, {
+                        code: parseResult.error.code,
+                        message: parseResult.error.error,
+                        isStreaming
+                    });
+                    return;
+                }
+
+                prompt = parseResult.data.prompt;
+                imagePaths = parseResult.data.imagePaths;
+                modelId = parseResult.data.modelId;
+                modelName = parseResult.data.modelName;
+                reasoning = data.reasoning === true;
             }
             // =================================================
 
-            // 解析请求（使用处理后的数据）
-            const parseResult = await parseRequest(processedData, {
-                tempDir,
-                imageLimit,
-                backendName,
-                getSupportedModels: getModels,
-                getImagePolicy,
-                getModelType,
-                requestId,
-                logger
-            });
-
-            if (!parseResult.success) {
-                sendApiError(res, {
-                    code: parseResult.error.code,
-                    message: parseResult.error.error,
-                    isStreaming
-                });
-                return;
-            }
-
-            const { prompt, imagePaths, modelId, modelName } = parseResult.data;
-            const reasoning = data.reasoning === true;
-
             logger.info('服务器', `[队列] 请求入队: ${prompt.slice(0, 100)}...`, { id: requestId, images: imagePaths.length });
 
-            // 加入队列（附带 toolState 供响应处理）
+            // 加入队列（附带 tools 信息供响应处理）
             queueManager.addTask({
                 req,
                 res,
@@ -150,7 +183,10 @@ export function createOpenAIRouter(context) {
                 id: requestId,
                 isStreaming,
                 reasoning,
-                toolState: toolState.active ? toolState : undefined
+                toolsEnabled,
+                normalizedTools,
+                toolChoiceResolved,
+                toolCfg,
             });
 
         } catch (err) {

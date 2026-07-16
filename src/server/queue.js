@@ -11,12 +11,13 @@ import {
     sendHeartbeat,
     sendApiError,
     buildChatCompletion,
-    buildChatCompletionChunk
+    buildChatCompletionChunk,
+    buildToolCallStreamChunks,
 } from './respond.js';
 import { ERROR_CODES } from './errors.js';
 import { incrementSuccess, incrementFailed } from '../utils/stats.js';
 import { createRecord, updateRecord, processResponseMedia } from '../utils/history.js';
-import { toolMiddleware } from '../toolcalling/middleware.js';
+import { parseToolCalls, needsRequiredRetry, buildRequiredRetrySuffix } from './tools/toolCalling.js';
 
 /**
  * @typedef {object} TaskContext
@@ -95,7 +96,7 @@ export function createQueueManager(queueConfig, callbacks) {
      * @param {TaskContext} task - 任务上下文
      */
     async function processTask(task) {
-        const { res, prompt, imagePaths, modelId, modelName, id, isStreaming, reasoning, toolState } = task;
+        const { res, prompt, imagePaths, modelId, modelName, id, isStreaming, reasoning, toolsEnabled, normalizedTools, toolChoiceResolved, toolCfg } = task;
         const startTime = Date.now();
 
         logger.info('服务器', '[队列] 开始处理任务', { id, remaining: queue.length });
@@ -161,54 +162,64 @@ export function createQueueManager(queueConfig, callbacks) {
                 return;
             }
 
-            // ============ Tool Calling Middleware ============
-            // 解析响应中的工具调用（如果本请求有 toolState）
-            let toolResult = null;
-            if (toolState) {
-                toolResult = toolMiddleware.processResponse(result, toolState);
-                if (toolResult && toolResult.tool_calls && toolResult.tool_calls.length > 0) {
-                    logger.info('服务器', `[工具调用] 检测到 ${toolResult.tool_calls.length} 个工具调用`, {
+            // ============ Tool Calling Pipeline (Response) ============
+            let finalContent = '';
+            let reasoningContent = null;
+            let historyResponseText = '';
+            let tool_calls = null;
+
+            if (toolsEnabled) {
+                // 解析工具调用
+                let parsed = parseToolCalls(result.text || '');
+
+                // required / force 重试一轮
+                if (toolCfg?.requiredRetry !== false && needsRequiredRetry(toolChoiceResolved, parsed.tool_calls)) {
+                    logger.info('服务器', `[工具调用] 需要重试（required/force 模式未检测到工具调用）`, { id });
+                    const retryPrompt = prompt + '\n\n' + buildRequiredRetrySuffix(toolChoiceResolved);
+                    const retryResult = await generate(poolContext, retryPrompt, imagePaths, modelId, { id, reasoning });
+                    if (!retryResult.error) {
+                        parsed = parseToolCalls(retryResult.text || '');
+                        result.text = retryResult.text;
+                        result.reasoning = retryResult.reasoning;
+                    }
+                }
+
+                tool_calls = parsed.tool_calls;
+
+                if (parsed.parseErrors?.length) {
+                    logger.debug('服务器', `[工具调用] 解析错误: ${parsed.parseErrors.join('; ')}`, { id });
+                }
+                if (tool_calls?.length) {
+                    logger.info('服务器', `[工具调用] 检测到 ${tool_calls.length} 个工具调用`, {
                         id,
-                        tools: toolResult.tool_calls.map(tc => tc.function.name)
+                        tools: tool_calls.map(tc => tc.function.name)
                     });
                 }
             }
             // =================================================
 
             // 生成成功
-            let finalContent = '';
-            let reasoningContent = null;  // 思考过程内容
-            let historyResponseText = '';  // 历史记录中存储的文本（不含 base64）
-
             if (result.image) {
-                // 判断是否开启 Markdown 格式
                 const imageMarkdown = config?.server?.imageMarkdown || false;
                 if (imageMarkdown) {
                     finalContent = `![generated](${result.image})`;
                 } else {
                     finalContent = result.image;
                 }
-                // 历史记录只存原始 URL，不存 base64
                 historyResponseText = result.imageUrl || '';
             } else {
                 finalContent = result.text || '生成失败';
                 historyResponseText = result.text || '';
             }
 
-            // 提取思考过程（如果有）
             if (result.reasoning) {
                 reasoningContent = result.reasoning;
-            }
-
-            // 如果检测到工具调用，使用 toolResult 的内容
-            if (toolResult && toolResult.tool_calls && toolResult.tool_calls.length > 0) {
-                finalContent = toolResult.text || '';
             }
 
             logger.info('服务器', '结果已准备就绪', { id });
             await incrementSuccess();
 
-            // 更新历史记录（异步处理媒体，不阻塞响应）
+            // 更新历史记录
             processResponseMedia(result, id).then(responseMedia => {
                 try {
                     updateRecord(id, {
@@ -228,11 +239,30 @@ export function createQueueManager(queueConfig, callbacks) {
             // 发送成功响应
             logger.info('服务器', '准备发送响应...', { id, isStreaming, contentLength: finalContent.length, hasReasoning: !!reasoningContent });
 
-            if (toolResult && toolResult.tool_calls && toolResult.tool_calls.length > 0) {
+            if (tool_calls?.length) {
                 // 工具调用响应
-                const toolCallResponse = toolMiddleware.buildToolCallCompletion(toolResult.tool_calls, modelName);
-                sendJson(res, 200, toolCallResponse);
-                logger.info('服务器', '工具调用响应已发送', { id, toolCount: toolResult.tool_calls.length });
+                if (isStreaming) {
+                    const chunks = buildToolCallStreamChunks({
+                        model: modelName,
+                        content: finalContent || null,
+                        tool_calls,
+                        reasoning: reasoningContent,
+                    });
+                    for (const chunk of chunks) {
+                        sendSse(res, chunk);
+                    }
+                    sendSseDone(res);
+                } else {
+                    const response = buildChatCompletion({
+                        model: modelName,
+                        content: finalContent || null,
+                        tool_calls,
+                        reasoning: reasoningContent,
+                        finish_reason: 'tool_calls',
+                    });
+                    sendJson(res, 200, response);
+                }
+                logger.info('服务器', '工具调用响应已发送', { id, toolCount: tool_calls.length });
             } else if (isStreaming) {
                 const chunk = buildChatCompletionChunk(finalContent, modelName, 'stop', reasoningContent);
                 sendSse(res, chunk);
