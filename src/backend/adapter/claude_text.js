@@ -248,8 +248,8 @@ export const manifest = {
     },
 
     models: [
-        { id: 'claude-sonnet-5', codeName: 'Sonnet', imagePolicy: 'forbidden', type: 'text' },
-        { id: 'claude-auto', codeName: '', imagePolicy: 'forbidden', type: 'text' }
+        { type: 'text', id: 'claude-sonnet-5', codeName: 'Sonnet', imagePolicy: 'forbidden' },
+        { type: 'text', id: 'claude-auto', codeName: '', imagePolicy: 'forbidden' }
     ],
 
     navigationHandlers: [],
