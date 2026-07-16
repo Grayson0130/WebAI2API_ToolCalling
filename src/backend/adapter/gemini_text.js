@@ -86,105 +86,29 @@ async function generate(context, prompt, imgPaths, modelId, meta = {}) {
         // 1. 等待输入框加载
         await waitForInput(page, inputLocator, { click: false });
 
-        // 2. 上传图片（通过页面自身的 file input）
+        // 2. 上传图片
         if (imgPaths && imgPaths.length > 0) {
             logger.info('适配器', `开始上传 ${imgPaths.length} 张图片...`, meta);
-            try {
-                // 用 Playwright 的 filechooser 机制：在所有可见按钮上尝试
-                logger.debug('适配器', '搜索上传按钮...', meta);
-                const allButtons = page.locator('button');
-                const btnCount = await allButtons.count().catch(() => 0);
-                let uploaded = false;
+            logger.debug('适配器', '点击加号按钮...', meta);
+            const uploadMenuBtn = page.getByRole('button', { name: 'Open upload file menu' });
+            await safeClick(page, uploadMenuBtn, { bias: 'button' });
 
-                for (let i = 0; i < btnCount && !uploaded; i++) {
-                    const btn = allButtons.nth(i);
-                    const txt = await btn.textContent().catch(() => '');
-                    // 忽略太短的按钮文本（图标按钮可能有空白文本）
-                    if (txt.trim().length > 0) continue;
-
-                    // 尝试在每个按钮上触发 filechooser
-                    try {
-                        const [chooser] = await Promise.all([
-                            page.waitForEvent('filechooser', { timeout: 3000 }),
-                            btn.click({ timeout: 2000 }),
-                        ]);
-                        if (chooser) {
-                            await chooser.setFiles(imgPaths);
-                            uploaded = true;
-                            logger.info('适配器', `通过按钮[${i}]上传成功`, meta);
-                            break;
-                        }
-                    } catch {}
+            const uploadFilesBtn = page.getByRole('menuitem', { name: /Upload files/ });
+            await uploadFilesViaChooser(page, uploadFilesBtn, imgPaths, {
+                uploadValidator: (response) => {
+                    const url = response.url();
+                    return response.status() === 200 &&
+                        url.includes('google.com/upload/') &&
+                        url.includes('upload_id=');
                 }
-
-                if (!uploaded) {
-                    // 兜底：直接创建 file input 并 setInputFiles
-                    logger.warn('适配器', '未找到上传按钮，尝试直接设置 file input', meta);
-                    const fi = page.locator('input[type="file"]');
-                    if (await fi.count().catch(() => 0)) {
-                        await fi.first().setInputFiles(imgPaths);
-                        uploaded = true;
-                    } else {
-                        // 注入隐藏 input
-                        await page.evaluate(() => {
-                            const el = document.createElement('input');
-                            el.type = 'file';
-                            el.id = '__webai2api_file';
-                            el.multiple = true;
-                            el.accept = 'image/*';
-                            el.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;z-index:9999';
-                            document.body.appendChild(el);
-                        });
-                        await page.locator('#__webai2api_file').setInputFiles(imgPaths);
-                        uploaded = true;
-                    }
-                }
-
-                if (uploaded) {
-                    logger.info('适配器', '等待图片上传处理...', meta);
-                    await sleep(5000, 7000);
-                }
-                logger.info('适配器', '图片处理完成', meta);
-            } catch (e) {
-                logger.warn('适配器', `图片上传失败: ${e.message}，跳过图片`, meta);
-            }
+            }, meta);
+            logger.info('适配器', '图片上传完成', meta);
         }
 
         // 3. 输入提示词
         logger.info('适配器', '输入提示词...', meta);
-        // 尝试多种方式聚焦输入框（Gemini UI 在上传图片后可能遮挡输入框）
-        let inputClicked = false;
-        try {
-            await safeClick(page, inputLocator, { bias: 'input', timeout: 5000 });
-            inputClicked = true;
-        } catch (e) {
-            logger.warn('适配器', `文本输入框点击失败: ${e.message}，尝试其他方式`, meta);
-        }
-        if (!inputClicked) {
-            // 回退：尝试其他输入框选择器
-            const fallbackInputs = [
-                page.locator('[contenteditable="true"]'),
-                page.locator('textarea'),
-                page.locator('[role="textbox"]'),
-            ];
-            for (const fi of fallbackInputs) {
-                if (await fi.count().catch(() => 0) > 0) {
-                    try {
-                        await fi.first().click({ timeout: 3000 });
-                        inputClicked = true;
-                        break;
-                    } catch {}
-                }
-            }
-        }
-        // 无论点击是否成功都尝试输入（跳过 focus，因为 input 可能被遮挡）
-        if (inputClicked) {
-            await humanType(page, inputLocator, prompt);
-        } else {
-            // 直接使用 keyboard 输入（不依赖聚焦元素）
-            logger.info('适配器', '使用 keyboard.type 直接输入...', meta);
-            await page.keyboard.type(prompt, { delay: 10 });
-        }
+        await safeClick(page, inputLocator, { bias: 'input' });
+        await humanType(page, inputLocator, prompt);
 
         // 4. 选择模型
         if (modelId) {
@@ -336,10 +260,7 @@ export const manifest = {
     models: [
         { id: 'gemini-3.1-flash', imagePolicy: 'optional', type: 'text' },
         { id: 'gemini-3.1-flash-thinking', imagePolicy: 'optional', type: 'text' },
-        { id: 'gemini-3.1-pro', imagePolicy: 'optional', type: 'text' },
-        { id: 'gemini-3.5-flash', imagePolicy: 'optional', type: 'text' },
-        { id: 'gemini-3.5-flash-thinking', imagePolicy: 'optional', type: 'text' },
-        { id: 'gemini-3.5-pro', imagePolicy: 'optional', type: 'text' }
+        { id: 'gemini-3.1-pro', imagePolicy: 'optional', type: 'text' }
     ],
 
     navigationHandlers: [],
