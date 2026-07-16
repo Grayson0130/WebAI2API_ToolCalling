@@ -1,0 +1,7 @@
+WebAI2API_ToolCalling
+node_modules/
+data/
+camoufox/
+dist/
+.env
+*.log
