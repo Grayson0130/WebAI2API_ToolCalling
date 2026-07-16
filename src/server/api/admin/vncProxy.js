@@ -24,12 +24,20 @@ export async function handleVncUpgrade(req, socket, head, authToken) {
         return;
     }
 
-    // 获取 VNC 信息
-    const vncInfo = await getVncInfo();
-    if (!vncInfo || !vncInfo.enabled) {
-        socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
-        socket.destroy();
-        return;
+    // 获取 VNC 信息（支持指定端口）
+    const targetPort = url.searchParams.get('port');
+    let targetVncPort;
+
+    if (targetPort) {
+        targetVncPort = parseInt(targetPort, 10);
+    } else {
+        const vncInfo = await getVncInfo();
+        if (!vncInfo || !vncInfo.enabled) {
+            socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+            socket.destroy();
+            return;
+        }
+        targetVncPort = vncInfo.port;
     }
 
     // 手动完成 WebSocket 握手
@@ -55,10 +63,10 @@ export async function handleVncUpgrade(req, socket, head, authToken) {
         '\r\n'
     );
 
-    // 连接到 VNC 服务器
+    // 连接到 VNC 服务器（使用指定端口或默认）
     const vncSocket = net.createConnection({
         host: '127.0.0.1',
-        port: vncInfo.port
+        port: targetVncPort
     });
 
     vncSocket.on('error', (err) => {

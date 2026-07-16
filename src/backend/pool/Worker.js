@@ -199,7 +199,8 @@ export class Worker {
         const base = await initBrowserBase(this.globalConfig, {
             userDataDir: this.userDataDir,
             instanceName: this.instanceName,
-            proxyConfig: this.proxyConfig
+            proxyConfig: this.proxyConfig,
+            vncSeparate: true  // 每个实例独立 VNC 端口
         });
 
         this.browser = base.context;
