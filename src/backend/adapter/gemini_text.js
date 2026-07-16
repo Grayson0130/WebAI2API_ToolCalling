@@ -6,7 +6,8 @@ import {
     sleep,
     humanType,
     safeClick,
-    uploadFilesViaChooser
+    uploadFilesViaChooser,
+    dumpUploadDebug
 } from '../engine/utils.js';
 import {
     normalizePageError,
@@ -113,12 +114,16 @@ async function generate(context, prompt, imgPaths, modelId, meta = {}) {
             } catch (err) {
                 // 兜底：菜单点不到时直接向隐藏 file input 注入文件
                 logger.warn('适配器', `上传菜单不可用，改用 file input 兜底: ${err.message}`, meta);
+                await dumpUploadDebug(page, meta, 'gemini');
                 const fileInput = page.locator('input[type="file"]').last();
                 await fileInput.waitFor({ state: 'attached', timeout: 10000 });
                 await fileInput.setInputFiles(imgPaths);
-                await page.waitForResponse(uploadValidator, { timeout: 60000 }).catch(() => {
-                    logger.warn('适配器', 'file input 兜底上传未确认，可能失败', meta);
-                });
+                const ok = await page.waitForResponse(uploadValidator, { timeout: 60000 })
+                    .then(() => true).catch(() => false);
+                if (!ok) {
+                    logger.error('适配器', 'file input 兜底上传未确认，判定失败', meta);
+                    return { error: '图片上传失败：未定位到可用的上传控件' };
+                }
             }
             logger.info('适配器', '图片上传完成', meta);
         }

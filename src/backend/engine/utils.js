@@ -21,6 +21,7 @@
  */
 
 import path from 'path';
+import fs from 'fs';
 import { logger } from '../../utils/logger.js';
 import { TIMEOUTS } from '../../utils/constants.js';
 
@@ -839,4 +840,38 @@ export function createPageCloseWatcher(page) {
 export async function getCookies(page) {
     const context = page.context();
     return await context.cookies();
+}
+
+/**
+ * 上传失败时截图 + dump 页面控件信息供调试
+ */
+export async function dumpUploadDebug(page, meta = {}, tag = 'upload') {
+    try {
+        const dir = '/tmp/webai-debug';
+        await fs.promises.mkdir(dir, { recursive: true });
+        const shot = `${dir}/${tag}-${Date.now()}.png`;
+        await page.screenshot({ path: shot, fullPage: true }).catch(() => {});
+        const info = await page.evaluate(() => {
+            const desc = (el) => ({
+                tag: el.tagName,
+                role: el.getAttribute('role'),
+                ariaLabel: el.getAttribute('aria-label'),
+                haspopup: el.getAttribute('aria-haspopup'),
+                title: el.getAttribute('title'),
+                testid: el.getAttribute('data-testid'),
+                type: el.getAttribute('type'),
+                text: (el.innerText || '').trim().slice(0, 40),
+            });
+            const q = (s) => Array.from(document.querySelectorAll(s));
+            return {
+                fileInputs: q('input[type="file"]').map(desc),
+                buttons: q('button,[role="button"]').slice(0, 80).map(desc),
+                menuItems: q('[role="menuitem"]').map(desc),
+            };
+        }).catch((e) => ({ evalError: e.message }));
+        logger.error('浏览器', `[upload-debug] 截图: ${shot}`, meta);
+        logger.error('浏览器', `[upload-debug] DOM: ${JSON.stringify(info)}`, meta);
+    } catch (e) {
+        logger.warn('浏览器', `[upload-debug] 采集失败: ${e.message}`, meta);
+    }
 }

@@ -6,7 +6,8 @@ import {
     sleep,
     humanType,
     safeClick,
-    uploadFilesViaChooser
+    uploadFilesViaChooser,
+    dumpUploadDebug
 } from '../engine/utils.js';
 import {
     normalizePageError,
@@ -132,7 +133,9 @@ async function generate(context, prompt, imgPaths, modelId, meta = {}) {
                 }, meta);
             } catch (uploadErr) {
                 logger.error('适配器', `图片上传失败: ${uploadErr.message}`, meta);
-                // 不抛出异常，继续尝试发送纯文本
+                await dumpUploadDebug(page, meta, 'doubao');
+                page.off('response', applyUploadHandler);
+                return { error: `图片上传失败：${uploadErr.message}` };
             } finally {
                 page.off('response', applyUploadHandler);
             }
