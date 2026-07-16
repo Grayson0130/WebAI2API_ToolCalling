@@ -16,6 +16,13 @@ server:
   # 图片生成结果返回 Markdown 格式
   imageMarkdown: false
 
+  # ── Tool Calling（prompt 模拟）──
+  toolCalling:
+    enabled: true              # 总开关
+    compactSchema: true        # 压缩 parameters，省输入长度
+    maxToolsChars: 8000        # tools JSON 截断阈值
+    requiredRetry: true        # tool_choice=required|force 失败时再跑 1 次
+
 backend:
   # ========================================
   # Pool 配置
