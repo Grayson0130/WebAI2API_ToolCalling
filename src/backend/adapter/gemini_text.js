@@ -89,48 +89,109 @@ async function generate(context, prompt, imgPaths, modelId, meta = {}) {
         // 2. 上传图片
         if (imgPaths && imgPaths.length > 0) {
             logger.info('适配器', `开始上传 ${imgPaths.length} 张图片...`, meta);
-            logger.debug('适配器', '点击加号或上传按钮...', meta);
+            try {
+                // 方案1: 直接设置 file input（如果存在）
+                const hasFileInput = await page.evaluate(() => !!document.querySelector('input[type="file"]')).catch(() => false);
+                if (hasFileInput) {
+                    logger.info('适配器', '找到 file input，直接设置文件', meta);
+                    await page.setInputFiles('input[type="file"]', imgPaths);
+                } else {
+                    // 方案2: 通过模拟拖拽上传（Gemini 新 UI 多数用 drag-and-drop）
+                    logger.debug('适配器', '尝试模拟拖拽上传...', meta);
 
-            // 尝试多种可能的按钮名称（Gemini UI 经常改）
-            const uploadBtnCandidates = [
-                page.getByRole('button', { name: 'Open upload file menu' }),
-                page.getByRole('button', { name: /upload|attach|add/i }),
-                page.getByRole('button', { name: /Add file|Attach|Image|Photo/i }),
-                page.locator('button[aria-label*="upload" i], button[aria-label*="attach" i]'),
-            ];
-            let uploadMenuBtn = null;
-            for (const candidate of uploadBtnCandidates) {
-                if (await candidate.count().catch(() => 0)) {
-                    uploadMenuBtn = candidate.first();
-                    break;
-                }
-            }
-            if (uploadMenuBtn) {
-                await safeClick(page, uploadMenuBtn, { bias: 'button', timeout: 5000 });
-            } else {
-                logger.warn('适配器', '未找到上传按钮，跳过图片上传', meta);
-            }
-
-            const uploadFilesBtn = page.getByRole('menuitem', { name: /Upload|upload file/i });
-            if (await uploadFilesBtn.count().catch(() => 0)) {
-                await uploadFilesViaChooser(page, uploadFilesBtn, imgPaths, {
-                    uploadValidator: (response) => {
-                        const url = response.url();
-                        return response.status() === 200 &&
-                            url.includes('google.com/upload/') &&
-                            url.includes('upload_id=');
+                    // 读取文件内容为 base64
+                    const fs = await import('fs');
+                    const path = await import('path');
+                    const files = [];
+                    for (const fp of imgPaths) {
+                        const content = fs.readFileSync(fp);
+                        const name = path.basename(fp);
+                        const mime = name.endsWith('.png') ? 'image/png'
+                            : name.endsWith('.jpg') || name.endsWith('.jpeg') ? 'image/jpeg'
+                            : name.endsWith('.gif') ? 'image/gif'
+                            : name.endsWith('.webp') ? 'image/webp'
+                            : 'image/png';
+                        files.push({ name, mime, data: content.toString('base64') });
                     }
-                }, meta);
-                logger.info('适配器', '图片上传完成', meta);
-            } else {
-                logger.warn('适配器', '未找到文件选择菜单项，尝试直接键盘粘贴图片', meta);
+
+                    // 在页面中创建 DataTransfer 并触发 drop 事件
+                    const uploaded = await page.evaluate(async (fileInfos) => {
+                        const dropTarget = document.querySelector('[contenteditable="true"], .ql-editor, [role="textbox"], .input-area, .chat-input')
+                            || document.querySelector('textarea')
+                            || document.body;
+
+                        for (const fi of fileInfos) {
+                            const resp = await fetch(`data:${fi.mime};base64,${fi.data}`);
+                            const blob = await resp.blob();
+                            const file = new File([blob], fi.name, { type: fi.mime });
+
+                            const dt = new DataTransfer();
+                            dt.items.add(file);
+
+                            const event = new DragEvent('drop', {
+                                bubbles: true,
+                                cancelable: true,
+                                dataTransfer: dt,
+                            });
+                            dropTarget.dispatchEvent(event);
+                        }
+                        return true;
+                    }, files).catch(e => { logger.warn('适配器', `拖拽上传失败: ${e.message}`, meta); return false; });
+
+                    if (uploaded) {
+                        logger.info('适配器', '图片拖拽上传完成', meta);
+                        // 等待上传处理
+                        await sleep(2000, 3000);
+                    } else {
+                        // 方案3: 回退到 filechooser
+                        logger.warn('适配器', '拖拽上传失败，尝试 filechooser...', meta);
+                        const anyBtn = page.locator('button').filter({ hasText: /upload|attach|image|photo|add/i }).first();
+                        if (await anyBtn.count().catch(() => 0)) {
+                            await uploadFilesViaChooser(page, anyBtn, imgPaths, {}, meta);
+                        }
+                    }
+                }
+                logger.info('适配器', '图片处理完成', meta);
+            } catch (e) {
+                logger.warn('适配器', `图片上传失败: ${e.message}，跳过图片`, meta);
             }
         }
 
         // 3. 输入提示词
         logger.info('适配器', '输入提示词...', meta);
-        await safeClick(page, inputLocator, { bias: 'input' });
-        await humanType(page, inputLocator, prompt);
+        // 尝试多种方式聚焦输入框（Gemini UI 在上传图片后可能遮挡输入框）
+        let inputClicked = false;
+        try {
+            await safeClick(page, inputLocator, { bias: 'input', timeout: 5000 });
+            inputClicked = true;
+        } catch (e) {
+            logger.warn('适配器', `文本输入框点击失败: ${e.message}，尝试其他方式`, meta);
+        }
+        if (!inputClicked) {
+            // 回退：尝试其他输入框选择器
+            const fallbackInputs = [
+                page.locator('[contenteditable="true"]'),
+                page.locator('textarea'),
+                page.locator('[role="textbox"]'),
+            ];
+            for (const fi of fallbackInputs) {
+                if (await fi.count().catch(() => 0) > 0) {
+                    try {
+                        await fi.first().click({ timeout: 3000 });
+                        inputClicked = true;
+                        break;
+                    } catch {}
+                }
+            }
+        }
+        // 无论点击是否成功都尝试输入（跳过 focus，因为 input 可能被遮挡）
+        if (inputClicked) {
+            await humanType(page, inputLocator, prompt);
+        } else {
+            // 直接使用 keyboard 输入（不依赖聚焦元素）
+            logger.info('适配器', '使用 keyboard.type 直接输入...', meta);
+            await page.keyboard.type(prompt, { delay: 10 });
+        }
 
         // 4. 选择模型
         if (modelId) {
