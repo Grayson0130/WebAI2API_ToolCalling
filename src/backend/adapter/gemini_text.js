@@ -89,17 +89,20 @@ async function generate(context, prompt, imgPaths, modelId, meta = {}) {
         // 2. 上传图片
         if (imgPaths && imgPaths.length > 0) {
             logger.info('适配器', `开始上传 ${imgPaths.length} 张图片...`, meta);
-            logger.debug('适配器', '点击加号按钮...', meta);
-            const uploadMenuBtn = page.getByRole('button', { name: 'Open upload file menu' });
-            await safeClick(page, uploadMenuBtn, { bias: 'button' });
+            logger.debug('适配器', '点击上传按钮...', meta);
+            const uploadMenuBtn = page.getByRole('button', {
+                name: /upload|add files|attach|加号|上传|附加/i
+            }).last();
+            await safeClick(page, uploadMenuBtn, { bias: 'button', timeout: 5000 });
 
-            const uploadFilesBtn = page.getByRole('menuitem', { name: /Upload files/ });
+            const uploadFilesBtn = page.getByRole('menuitem', {
+                name: /upload files|upload|文件|图片/i
+            }).first();
+
             await uploadFilesViaChooser(page, uploadFilesBtn, imgPaths, {
                 uploadValidator: (response) => {
                     const url = response.url();
-                    return response.status() === 200 &&
-                        url.includes('google.com/upload/') &&
-                        url.includes('upload_id=');
+                    return response.status() === 200 && url.includes('/upload/');
                 }
             }, meta);
             logger.info('适配器', '图片上传完成', meta);

@@ -7,7 +7,7 @@ import crypto from 'crypto';
 import { logger } from '../../../utils/logger.js';
 import { ERROR_CODES } from '../../errors.js';
 import { sendJson, sendSse, sendSseDone, sendApiError, buildChatCompletion, buildToolCallStreamChunks } from '../../respond.js';
-import { parseRequest } from './parse.js';
+import { parseRequest, extractImagePaths } from './parse.js';
 import {
   shouldEnableTools,
   normalizeTools,
@@ -132,7 +132,8 @@ export function createOpenAIRouter(context) {
                     }
                 );
                 prompt = compiled.prompt;
-                imagePaths = []; // tools 场景暂不处理图片
+                // 即使在 tools 场景，也从原始 messages 中解析图片
+                imagePaths = await extractImagePaths(data.messages, { tempDir, imageLimit });
                 modelId = data.model;
                 modelName = data.model;
                 reasoning = data.reasoning === true;

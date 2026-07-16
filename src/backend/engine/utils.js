@@ -649,11 +649,13 @@ export async function pasteImages(page, target, filePaths, options = {}, meta = 
             const expectedUploads = filePaths.length;
             let validatedCount = 0;
 
-            const uploadPromise = new Promise((resolve) => {
+            const uploadPromise = new Promise((resolve, reject) => {
                 const timeout = setTimeout(() => {
                     cleanup();
-                    logger.warn('浏览器', `图片上传等待超时 (已确认: ${validatedCount}/${expectedUploads})`, meta);
-                    resolve();
+                    logger.error('浏览器', `图片上传等待超时 (已确认: ${validatedCount}/${expectedUploads})`, meta);
+                    const err = new Error(`图片上传超时: ${validatedCount}/${expectedUploads}`);
+                    err.code = 'UPLOAD_CONFIRM_TIMEOUT';
+                    reject(err);
                 }, 60000); // 60s 超时
 
                 const onResponse = (response) => {
