@@ -8,6 +8,7 @@ import { logger } from '../../../utils/logger.js';
 import { ERROR_CODES } from '../../errors.js';
 import { sendJson, sendApiError } from '../../respond.js';
 import { parseRequest } from './parse.js';
+import { toolMiddleware } from '../../../toolcalling/middleware.js';
 
 /**
  * 创建 OpenAI API 路由处理器
@@ -101,8 +102,19 @@ export function createOpenAIRouter(context) {
                 });
             }
 
-            // 解析请求
-            const parseResult = await parseRequest(data, {
+            // ============ Tool Calling Middleware ============
+            // 将 tools 参数通过提示词工程注入到消息中
+            const { processedData, toolState } = toolMiddleware.processRequest(data, {
+                format: data.tool_format || 'xml'
+            });
+
+            if (toolState.active) {
+                logger.info('服务器', `[工具调用] 已注入 ${toolState.tools.length} 个工具定义`, { id: requestId, tools: toolState.toolNames });
+            }
+            // =================================================
+
+            // 解析请求（使用处理后的数据）
+            const parseResult = await parseRequest(processedData, {
                 tempDir,
                 imageLimit,
                 backendName,
@@ -127,7 +139,7 @@ export function createOpenAIRouter(context) {
 
             logger.info('服务器', `[队列] 请求入队: ${prompt.slice(0, 100)}...`, { id: requestId, images: imagePaths.length });
 
-            // 加入队列
+            // 加入队列（附带 toolState 供响应处理）
             queueManager.addTask({
                 req,
                 res,
@@ -137,7 +149,8 @@ export function createOpenAIRouter(context) {
                 modelName,
                 id: requestId,
                 isStreaming,
-                reasoning
+                reasoning,
+                toolState: toolState.active ? toolState : undefined
             });
 
         } catch (err) {

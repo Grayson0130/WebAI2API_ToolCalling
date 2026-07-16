@@ -16,6 +16,7 @@ import {
 import { ERROR_CODES } from './errors.js';
 import { incrementSuccess, incrementFailed } from '../utils/stats.js';
 import { createRecord, updateRecord, processResponseMedia } from '../utils/history.js';
+import { toolMiddleware } from '../toolcalling/middleware.js';
 
 /**
  * @typedef {object} TaskContext
@@ -94,7 +95,7 @@ export function createQueueManager(queueConfig, callbacks) {
      * @param {TaskContext} task - 任务上下文
      */
     async function processTask(task) {
-        const { res, prompt, imagePaths, modelId, modelName, id, isStreaming, reasoning } = task;
+        const { res, prompt, imagePaths, modelId, modelName, id, isStreaming, reasoning, toolState } = task;
         const startTime = Date.now();
 
         logger.info('服务器', '[队列] 开始处理任务', { id, remaining: queue.length });
@@ -160,6 +161,20 @@ export function createQueueManager(queueConfig, callbacks) {
                 return;
             }
 
+            // ============ Tool Calling Middleware ============
+            // 解析响应中的工具调用（如果本请求有 toolState）
+            let toolResult = null;
+            if (toolState) {
+                toolResult = toolMiddleware.processResponse(result, toolState);
+                if (toolResult && toolResult.tool_calls && toolResult.tool_calls.length > 0) {
+                    logger.info('服务器', `[工具调用] 检测到 ${toolResult.tool_calls.length} 个工具调用`, {
+                        id,
+                        tools: toolResult.tool_calls.map(tc => tc.function.name)
+                    });
+                }
+            }
+            // =================================================
+
             // 生成成功
             let finalContent = '';
             let reasoningContent = null;  // 思考过程内容
@@ -185,6 +200,11 @@ export function createQueueManager(queueConfig, callbacks) {
                 reasoningContent = result.reasoning;
             }
 
+            // 如果检测到工具调用，使用 toolResult 的内容
+            if (toolResult && toolResult.tool_calls && toolResult.tool_calls.length > 0) {
+                finalContent = toolResult.text || '';
+            }
+
             logger.info('服务器', '结果已准备就绪', { id });
             await incrementSuccess();
 
@@ -207,7 +227,13 @@ export function createQueueManager(queueConfig, callbacks) {
 
             // 发送成功响应
             logger.info('服务器', '准备发送响应...', { id, isStreaming, contentLength: finalContent.length, hasReasoning: !!reasoningContent });
-            if (isStreaming) {
+
+            if (toolResult && toolResult.tool_calls && toolResult.tool_calls.length > 0) {
+                // 工具调用响应
+                const toolCallResponse = toolMiddleware.buildToolCallCompletion(toolResult.tool_calls, modelName);
+                sendJson(res, 200, toolCallResponse);
+                logger.info('服务器', '工具调用响应已发送', { id, toolCount: toolResult.tool_calls.length });
+            } else if (isStreaming) {
                 const chunk = buildChatCompletionChunk(finalContent, modelName, 'stop', reasoningContent);
                 sendSse(res, chunk);
                 sendSseDone(res);
