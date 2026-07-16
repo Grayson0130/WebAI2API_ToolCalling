@@ -86,70 +86,63 @@ async function generate(context, prompt, imgPaths, modelId, meta = {}) {
         // 1. 等待输入框加载
         await waitForInput(page, inputLocator, { click: false });
 
-        // 2. 上传图片
+        // 2. 上传图片（通过页面自身的 file input）
         if (imgPaths && imgPaths.length > 0) {
             logger.info('适配器', `开始上传 ${imgPaths.length} 张图片...`, meta);
             try {
-                // 方案1: 直接设置 file input（如果存在）
-                const hasFileInput = await page.evaluate(() => !!document.querySelector('input[type="file"]')).catch(() => false);
-                if (hasFileInput) {
-                    logger.info('适配器', '找到 file input，直接设置文件', meta);
-                    await page.setInputFiles('input[type="file"]', imgPaths);
-                } else {
-                    // 方案2: 通过模拟拖拽上传（Gemini 新 UI 多数用 drag-and-drop）
-                    logger.debug('适配器', '尝试模拟拖拽上传...', meta);
+                // 用 Playwright 的 filechooser 机制：在所有可见按钮上尝试
+                logger.debug('适配器', '搜索上传按钮...', meta);
+                const allButtons = page.locator('button');
+                const btnCount = await allButtons.count().catch(() => 0);
+                let uploaded = false;
 
-                    // 读取文件内容为 base64
-                    const fs = await import('fs');
-                    const path = await import('path');
-                    const files = [];
-                    for (const fp of imgPaths) {
-                        const content = fs.readFileSync(fp);
-                        const name = path.basename(fp);
-                        const mime = name.endsWith('.png') ? 'image/png'
-                            : name.endsWith('.jpg') || name.endsWith('.jpeg') ? 'image/jpeg'
-                            : name.endsWith('.gif') ? 'image/gif'
-                            : name.endsWith('.webp') ? 'image/webp'
-                            : 'image/png';
-                        files.push({ name, mime, data: content.toString('base64') });
-                    }
+                for (let i = 0; i < btnCount && !uploaded; i++) {
+                    const btn = allButtons.nth(i);
+                    const txt = await btn.textContent().catch(() => '');
+                    // 忽略太短的按钮文本（图标按钮可能有空白文本）
+                    if (txt.trim().length > 0) continue;
 
-                    // 在页面中创建 DataTransfer 并触发 drop 事件
-                    const uploaded = await page.evaluate(async (fileInfos) => {
-                        const dropTarget = document.querySelector('[contenteditable="true"], .ql-editor, [role="textbox"], .input-area, .chat-input')
-                            || document.querySelector('textarea')
-                            || document.body;
-
-                        for (const fi of fileInfos) {
-                            const resp = await fetch(`data:${fi.mime};base64,${fi.data}`);
-                            const blob = await resp.blob();
-                            const file = new File([blob], fi.name, { type: fi.mime });
-
-                            const dt = new DataTransfer();
-                            dt.items.add(file);
-
-                            const event = new DragEvent('drop', {
-                                bubbles: true,
-                                cancelable: true,
-                                dataTransfer: dt,
-                            });
-                            dropTarget.dispatchEvent(event);
+                    // 尝试在每个按钮上触发 filechooser
+                    try {
+                        const [chooser] = await Promise.all([
+                            page.waitForEvent('filechooser', { timeout: 3000 }),
+                            btn.click({ timeout: 2000 }),
+                        ]);
+                        if (chooser) {
+                            await chooser.setFiles(imgPaths);
+                            uploaded = true;
+                            logger.info('适配器', `通过按钮[${i}]上传成功`, meta);
+                            break;
                         }
-                        return true;
-                    }, files).catch(e => { logger.warn('适配器', `拖拽上传失败: ${e.message}`, meta); return false; });
+                    } catch {}
+                }
 
-                    if (uploaded) {
-                        logger.info('适配器', '图片拖拽上传完成', meta);
-                        // 等待上传处理
-                        await sleep(2000, 3000);
+                if (!uploaded) {
+                    // 兜底：直接创建 file input 并 setInputFiles
+                    logger.warn('适配器', '未找到上传按钮，尝试直接设置 file input', meta);
+                    const fi = page.locator('input[type="file"]');
+                    if (await fi.count().catch(() => 0)) {
+                        await fi.first().setInputFiles(imgPaths);
+                        uploaded = true;
                     } else {
-                        // 方案3: 回退到 filechooser
-                        logger.warn('适配器', '拖拽上传失败，尝试 filechooser...', meta);
-                        const anyBtn = page.locator('button').filter({ hasText: /upload|attach|image|photo|add/i }).first();
-                        if (await anyBtn.count().catch(() => 0)) {
-                            await uploadFilesViaChooser(page, anyBtn, imgPaths, {}, meta);
-                        }
+                        // 注入隐藏 input
+                        await page.evaluate(() => {
+                            const el = document.createElement('input');
+                            el.type = 'file';
+                            el.id = '__webai2api_file';
+                            el.multiple = true;
+                            el.accept = 'image/*';
+                            el.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;z-index:9999';
+                            document.body.appendChild(el);
+                        });
+                        await page.locator('#__webai2api_file').setInputFiles(imgPaths);
+                        uploaded = true;
                     }
+                }
+
+                if (uploaded) {
+                    logger.info('适配器', '等待图片上传处理...', meta);
+                    await sleep(5000, 7000);
                 }
                 logger.info('适配器', '图片处理完成', meta);
             } catch (e) {

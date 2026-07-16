@@ -106,28 +106,61 @@ async function generate(context, prompt, imgPaths, modelId, meta = {}) {
             page.on('response', applyUploadHandler);
 
             try {
-                // 点击上传菜单按钮（排除掉含有模型名称或带有“更多”文案的按钮）
-                const uploadMenuBtn = page.locator('#input-engine-container button[aria-haspopup="menu"]')
-                    .filter({ hasNot: page.locator('text=/Fast|Think|Pro|快速|思考|专家|專家|更多/') })
-                    .first();
-                await safeClick(page, uploadMenuBtn, { bias: 'button' });
-                await sleep(300, 500);
-
-                // 点击上传文件选项
-                const uploadItem = page.locator('div[role="menuitem"]').filter({ hasText: /上传文件或图片|上傳檔案或圖片|Upload File or Image/ });
-                await uploadFilesViaChooser(page, uploadItem, imgPaths, {
-                    uploadValidator: (response) => {
-                        if (response.status() !== 200 || response.request().method() !== 'POST') return false;
-                        const url = response.url();
-                        for (const path of expectedUploadPaths) {
-                            if (url.includes(path)) return true;
-                        }
-                        return false;
+                // 尝试多种方式找到上传按钮
+                let uploadMenuBtn = null;
+                const uploadBtnCandidates = [
+                    page.locator('#input-engine-container button[aria-haspopup=”menu”]')
+                        .filter({ hasNot: page.locator('text=/Fast|Think|Pro|快速|思考|专家|專家|更多/') }).first(),
+                    page.locator('button[aria-haspopup=”menu”]').filter({ hasNotText: /Fast|Think|Pro|快速|思考|专家|專家|更多/ }).first(),
+                    page.getByRole('button', { name: /upload|attach|add|image|photo|file|上传|附加/i }),
+                    page.locator('button:visible').filter({ has: page.locator('svg, mat-icon, .icon') }).first(),
+                ];
+                for (const c of uploadBtnCandidates) {
+                    if (await c.count().catch(() => 0) > 0) {
+                        uploadMenuBtn = c.first();
+                        break;
                     }
-                }, meta);
+                }
+
+                if (uploadMenuBtn) {
+                    await safeClick(page, uploadMenuBtn, { bias: 'button', timeout: 5000 });
+                    await sleep(300, 500);
+
+                    // 点击上传文件选项
+                    const uploadItemCandidates = [
+                        page.locator('div[role=”menuitem”]').filter({ hasText: /上传文件或图片|上傳檔案或圖片|Upload File|Upload Image/i }),
+                        page.getByRole('menuitem', { name: /upload|file|image|文件|图片/i }),
+                        page.locator('[role=”menuitem”]').filter({ hasText: /upload|file|image|文件|图片/i }).first(),
+                    ];
+                    let uploadItem = null;
+                    for (const ci of uploadItemCandidates) {
+                        if (await ci.count().catch(() => 0) > 0) {
+                            uploadItem = ci.first();
+                            break;
+                        }
+                    }
+
+                    if (uploadItem) {
+                        await uploadFilesViaChooser(page, uploadItem, imgPaths, {
+                            uploadValidator: (response) => {
+                                if (response.status() !== 200 || response.request().method() !== 'POST') return false;
+                                const url = response.url();
+                                for (const path of expectedUploadPaths) {
+                                    if (url.includes(path)) return true;
+                                }
+                                return false;
+                            }
+                        }, meta);
+                    } else {
+                        // 兜底：直接在按钮上触发 filechooser
+                        logger.warn('适配器', '未找到上传菜单项，尝试直接触发', meta);
+                        await uploadFilesViaChooser(page, uploadMenuBtn, imgPaths, {}, meta);
+                    }
+                } else {
+                    logger.warn('适配器', '未找到上传按钮，跳过图片上传', meta);
+                }
             } catch (uploadErr) {
                 logger.error('适配器', `图片上传失败: ${uploadErr.message}`, meta);
-                // 不抛出异常，继续尝试发送纯文本
             } finally {
                 page.off('response', applyUploadHandler);
             }
@@ -187,11 +220,9 @@ async function generate(context, prompt, imgPaths, modelId, meta = {}) {
             page.on('response', handleResponse);
         });
 
-        // 6. 点击发送
-        const sendBtn = page.locator('button#flow-end-msg-send');
-        await sendBtn.waitFor({ state: 'visible', timeout: 10000 });
-        logger.info('适配器', '点击发送...', meta);
-        await safeClick(page, sendBtn, { bias: 'button' });
+        // 6. 点击发送（先用 Enter，不行再查按钮）
+        logger.info('适配器', '尝试 Enter 发送...', meta);
+        await page.keyboard.press('Enter');
 
         // 7. 等待响应
         logger.info('适配器', '等待生成结果...', meta);
