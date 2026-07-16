@@ -35,7 +35,6 @@ import {
 } from '../../../config/validator.js';
 import { registry } from '../../../backend/registry.js';
 import { sendRestartSignal, sendStopSignal, isUnderSupervisor, getVncInfo } from '../../../utils/ipc.js';
-import { getSpawnedVncInstances } from '../../../backend/engine/launcher.js';
 import { getTodayStats, getStatsRange, clearStatsRange } from '../../../utils/stats.js';
 import {
     getList as getHistoryList,
@@ -165,14 +164,19 @@ export function createAdminRouter(context) {
                 return;
             }
 
-            // GET /admin/vnc/status - VNC 状态（含所有实例 VNC）
+            // GET /admin/vnc/status - VNC 状态
             if (method === 'GET' && pathname === '/vnc/status') {
                 const vncInfo = await getVncInfo();
-                const instances = getSpawnedVncInstances();
-                sendJson(res, 200, {
-                    ...(vncInfo || { enabled: false, port: 0, display: '', xvfbMode: false }),
-                    instances  // 独立 VNC 实例列表 [{label, display, port}]
-                });
+                if (vncInfo) {
+                    sendJson(res, 200, vncInfo);
+                } else {
+                    sendJson(res, 200, {
+                        enabled: false,
+                        port: 0,
+                        display: '',
+                        xvfbMode: false
+                    });
+                }
                 return;
             }
 

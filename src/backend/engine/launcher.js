@@ -14,7 +14,6 @@ import { FingerprintGenerator } from 'fingerprint-generator';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { spawn } from 'child_process';
 import { createCursor } from 'ghost-cursor-playwright-port';
 import { getRealViewport, clamp, random, sleep } from './utils.js';
 import { logger } from '../../utils/logger.js';
@@ -23,48 +22,6 @@ import { getBrowserProxy, cleanupProxy } from '../../utils/proxy.js';
 // 全局状态：用于在登录模式下管理残留进程与复用上下文
 let globalBrowserProcess = null;
 let globalContext = null; // 替代 globalBrowser
-
-// ─── VNC 端口分配 ──────────────────────────────────────────
-// 每个浏览器实例获得独立的 Xvfb 显示器和 VNC 端口
-// 首个实例从 5901 开始（5900 为 supervisor 所用）
-let nextVncPort = 5901;
-const spawnedDisplays = new Map(); // display -> { xvfb, x11vnc, port, label }
-
-/**
- * 分配并启动独立的 Xvfb + x11vnc
- * @param {string} label - 实例名（日志用）
- * @returns {{ display: string, port: number }}
- */
-function spawnDisplay(label) {
-    const port = nextVncPort++;
-    const displayNum = 50 + port - 5901; // 5901 → :50, 5902 → :51 ...
-    const display = `:${displayNum}`;
-
-    try {
-        // 启动 Xvfb
-        const xvfb = spawn('Xvfb', [
-            display, '-ac', '-screen', '0', '1366x768x24', '-nolisten', 'tcp'
-        ], { stdio: 'ignore', detached: true });
-        xvfb.unref();
-
-        // 启动 x11vnc
-        const x11vnc = spawn('x11vnc', [
-            '-display', display,
-            '-rfbport', String(port),
-            '-nopw', '-shared', '-forever',
-            '-noxdamage', '-norc'
-        ], { stdio: 'ignore', detached: true });
-        x11vnc.unref();
-
-        spawnedDisplays.set(display, { xvfb, x11vnc, port, label });
-        logger.info('VNC', `[${label}] 已启动: ${display} → 端口 ${port}`);
-
-        return { display, port };
-    } catch (err) {
-        logger.warn('VNC', `[${label}] 启动失败: ${err.message}，回退到共享显示器`);
-        return { display: process.env.DISPLAY || ':99', port: 5900 };
-    }
-}
 
 /**
  * 清理浏览器资源和进程
@@ -297,8 +254,7 @@ export async function initBrowserBase(config, options = {}) {
     const {
         userDataDir,
         instanceName = null,
-        proxyConfig = null,
-        vncSeparate = false  // 是否分配独立 VNC
+        proxyConfig = null
     } = options;
 
     // 日志标识 (优先使用实例名称)
@@ -325,19 +281,11 @@ export async function initBrowserBase(config, options = {}) {
     const fingerprintPath = path.join(userDataDir, 'fingerprint.json');
     const myFingerprint = await getPersistentFingerprint(fingerprintPath);
 
-    // 分配独立 VNC 显示
-    let customDisplay = null;
-    if (vncSeparate && !isLoginMode && isXvfbMode) {
-        const displayInfo = spawnDisplay(markLabel);
-        customDisplay = displayInfo.display;
-    }
-
     // 构造 Camoufox 启动选项
     const currentOS = getCurrentOS();
-    const camoufoxLaunchOptions = {
-        virtual_display: customDisplay,  // 让 Camoufox 使用独立显示器
-        executable_path: browserConfig.path || undefined,
-        headless: headlessMode,
+	    const camoufoxLaunchOptions = {
+	        executable_path: browserConfig.path || undefined,
+	        headless: headlessMode,
         user_data_dir: userDataDir,
         ff_version: 135,
         fingerprint: myFingerprint,
@@ -484,16 +432,4 @@ export async function initBrowserBase(config, options = {}) {
 
 // 导出工具函数供 pool.js 使用
 export { createCursor, getRealViewport, clamp, random, sleep };
-
-/**
- * 获取所有已启动的独立 VNC 实例列表
- * @returns {Array<{label:string, display:string, port:number}>}
- */
-export function getSpawnedVncInstances() {
-    const instances = [];
-    for (const [, info] of spawnedDisplays) {
-        instances.push({ label: info.label, display: info.display, port: info.port });
-    }
-    return instances;
-}
 
